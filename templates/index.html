@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoMind · 几何证明步骤画板</title>
+    <!-- v 参数用于强制刷新缓存,改 CSS 时把数字加 1 即可 -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=5">
+
+    <!-- KaTeX:渲染 AI 输出中的 LaTeX 公式($...$ 或 $$...$$) -->
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+          integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+"
+          crossorigin="anonymous">
+    <script defer
+            src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+            integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg"
+            crossorigin="anonymous"></script>
+    <script defer
+            src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+            integrity="sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk"
+            crossorigin="anonymous"></script>
+</head>
+<body>
+
+<header class="hero">
+    <div class="hero-inner">
+        <h1>📐 GeoMind</h1>
+        <p class="tagline">输入一道题目,AI 给出过程与答案;若是几何证明,还会自动画出每一步证明图。</p>
+    </div>
+</header>
+
+<main class="container">
+
+    <!-- ================== 题目输入卡片 ================== -->
+    <section class="card">
+        <h2>① 输入题目</h2>
+
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="text">✍️ 文字输入</button>
+            <button class="tab-btn" data-tab="image">📷 图片上传</button>
+        </div>
+
+        <div class="tab-panel active" id="panel-text">
+            <textarea id="problem-text" rows="5"
+                placeholder="例如:三角形ABC中,D是BC的中点,E是AC的中点,求证 DE∥AB。"></textarea>
+        </div>
+
+        <div class="tab-panel" id="panel-image">
+            <label class="upload-area" id="upload-label">
+                <input type="file" id="problem-image" accept="image/*" hidden>
+                <div class="upload-hint" id="upload-hint">
+                    <span class="big-plus">＋</span>
+                    <span>点击或拖拽上传题目图片</span>
+                </div>
+                <img id="image-preview" alt="预览" style="display:none">
+            </label>
+        </div>
+
+        <div class="action-row">
+            <button id="btn-solve" class="primary">🚀 开始解题</button>
+            <span class="loading" id="solve-loading" style="display:none">AI 正在解析,请稍候...</span>
+        </div>
+        <div class="error" id="solve-error" style="display:none"></div>
+    </section>
+
+    <!-- ================== 结果区 ================== -->
+    <section class="card hidden" id="result-card">
+        <h2>② 解题过程</h2>
+
+        <div class="understand" id="understand"></div>
+
+        <!-- 几何证明分支:图 + 步骤 -->
+        <div class="result-grid hidden" id="geo-result">
+            <div class="result-image">
+                <div class="step-viewer">
+                    <img id="proof-image" alt="证明步骤图">
+                </div>
+                <div class="step-indicator" id="step-indicator">
+                    <!-- JS 动态填充小圆点 -->
+                </div>
+            </div>
+            <div class="result-steps" id="step-list"></div>
+        </div>
+
+        <!-- 其它题目分支:文字过程 + 答案 -->
+        <div class="non-geo-result hidden" id="non-geo-result">
+            <div class="solve-process">
+                <div class="block-label">📝 解题过程</div>
+                <div class="solve-process-body" id="solve-process-body"></div>
+            </div>
+            <div class="solve-answer">
+                <div class="block-label">✅ 答案</div>
+                <div class="solve-answer-body" id="solve-answer-body"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================== 聊天区 ================== -->
+    <section class="card hidden" id="chat-card">
+        <h2>③ 还有疑问?随时问 AI 老师</h2>
+        <div class="chat-history" id="chat-history">
+            <div class="chat-msg ai">
+                <div class="chat-bubble">你好!如果对上面的解题过程有任何疑问,直接问我吧 😊</div>
+            </div>
+        </div>
+        <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="例如:为什么这一步要这样做?" />
+            <button id="btn-chat" class="primary">发送</button>
+        </div>
+    </section>
+
+</main>
+
+<footer>
+    <span>GeoMind · Powered by Qwen + Matplotlib</span>
+</footer>
+
+<script>
+// ============================================================
+// 全局状态
+// ============================================================
+let solveContext = null;       // 最近一次解题返回的步骤数据(用于聊天上下文)
+let problemImageBase64 = "";   // 当前上传图片的 base64
+let stepImages = [];           // 当前题目每步对应的大图 base64 列表
+let currentStep = 0;           // 当前展示的步骤索引(从 0 开始)
+
+// ============================================================
+// 工具函数
+// ============================================================
+function $(sel) { return document.querySelector(sel); }
+function $$(sel) { return document.querySelectorAll(sel); }
+
+function showError(el, msg) {
+    el.textContent = msg;
+    el.style.display = msg ? "block" : "none";
+}
+
+function escapeHtml(s) {
+    const map = { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" };
+    return String(s == null ? "" : s).replace(/[&<>"']/g, ch => map[ch]);
+}
+
+// 用 KaTeX 把元素里的 LaTeX 公式($...$ / $$...$$ / \(\) / \[\]) 渲染成数学符号
+function renderMath(el) {
+    if (!el || typeof renderMathInElement !== "function") return;
+    try {
+        renderMathInElement(el, {
+            delimiters: [
+                { left: "$$", right: "$$", display: true  },
+                { left: "$",  right: "$",  display: false },
+                { left: "\\[", right: "\\]", display: true  },
+                { left: "\\(", right: "\\)", display: false },
+            ],
+            throwOnError: false,
+            ignoredTags: ["script", "noscript", "style", "textarea", "pre"],
+        });
+    } catch (e) {
+        console.warn("KaTeX render failed:", e);
+    }
+}
+
+// 提交新题目前,把上一题的结果区彻底清空,避免旧内容残留(图片、步骤、答案、聊天)。
+function resetResultUI() {
+    // 全局状态
+    solveContext = null;
+    stepImages = [];
+    currentStep = 0;
+
+    // 隐藏结果卡和聊天卡
+    $("#result-card").classList.add("hidden");
+    $("#chat-card").classList.add("hidden");
+    $("#geo-result").classList.add("hidden");
+    $("#non-geo-result").classList.add("hidden");
+
+    // 清空内容
+    $("#understand").innerHTML = "";
+    $("#step-list").innerHTML = "";
+    $("#step-indicator").innerHTML = "";
+    $("#proof-image").removeAttribute("src");
+    $("#solve-process-body").innerHTML = "";
+    $("#solve-answer-body").innerHTML = "";
+
+    // 重置聊天历史(保留欢迎语)
+    $("#chat-history").innerHTML = `
+        <div class="chat-msg ai">
+            <div class="chat-bubble">你好!如果对上面的解题过程有任何疑问,直接问我吧 😊</div>
+        </div>
+    `;
+    chatMsgCounter = 0;
+}
+
+// ============================================================
+// Tab 切换
+// ============================================================
+$$(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        $$(".tab-btn").forEach(b => b.classList.remove("active"));
+        $$(".tab-panel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        $("#panel-" + btn.dataset.tab).classList.add("active");
+    });
+});
+
+// ============================================================
+// 图片上传:转 base64 + 预览
+// ============================================================
+$("#problem-image").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+        alert("图片过大,请压缩到 10MB 以内");
+        e.target.value = "";
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = ev => {
+        const dataUrl = ev.target.result;
+        problemImageBase64 = dataUrl.split(",")[1] || "";  // 去掉 data:xxx;base64, 前缀
+        const img = $("#image-preview");
+        img.src = dataUrl;
+        img.style.display = "block";
+        $("#upload-hint").style.display = "none";
+    };
+    reader.readAsDataURL(file);
+});
+
+// 拖拽支持
+const uploadLabel = $("#upload-label");
+["dragenter","dragover"].forEach(ev =>
+    uploadLabel.addEventListener(ev, e => { e.preventDefault(); uploadLabel.classList.add("drag"); })
+);
+["dragleave","drop"].forEach(ev =>
+    uploadLabel.addEventListener(ev, e => { e.preventDefault(); uploadLabel.classList.remove("drag"); })
+);
+uploadLabel.addEventListener("drop", e => {
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    $("#problem-image").files = e.dataTransfer.files;
+    $("#problem-image").dispatchEvent(new Event("change"));
+});
+
+// ============================================================
+// 提交题目 -> /solve
+// ============================================================
+$("#btn-solve").addEventListener("click", async () => {
+    const text = $("#problem-text").value.trim();
+    if (!text && !problemImageBase64) {
+        showError($("#solve-error"), "请输入文字题目或上传图片");
+        return;
+    }
+    // 提交新题前清空上一题的结果区(图片/步骤/答案/聊天历史)
+    resetResultUI();
+    showError($("#solve-error"), "");
+    $("#solve-loading").style.display = "inline";
+    $("#btn-solve").disabled = true;
+
+    try {
+        const formData = new FormData();
+        formData.append("problem_text", text);
+        formData.append("problem_image", problemImageBase64);
+
+        const resp = await fetch("/solve", { method: "POST", body: formData });
+        const data = await resp.json();
+        if (!resp.ok) {
+            // 若后端返回了 AI 原始输出,把它一并展示便于诊断
+            let msg = data.error || "请求失败";
+            if (data.raw) {
+                msg += "\n\n--- AI 原始返回(已截断) ---\n" + data.raw;
+            }
+            throw new Error(msg);
+        }
+
+        renderResult(data);
+    } catch (err) {
+        showError($("#solve-error"), err.message);
+    } finally {
+        $("#solve-loading").style.display = "none";
+        $("#btn-solve").disabled = false;
+    }
+});
+
+function renderResult(data) {
+    solveContext = data.steps || {};
+    const meta = data.steps || {};
+    const type = meta["类型"] || "几何证明";
+
+    // 题目理解
+    $("#understand").innerHTML = meta["题目理解"]
+        ? "<strong>题目理解:</strong> " + escapeHtml(meta["题目理解"])
+        : "";
+
+    if (type === "几何证明") {
+        $("#geo-result").classList.remove("hidden");
+        $("#non-geo-result").classList.add("hidden");
+        renderGeoResult(data);
+    } else {
+        $("#geo-result").classList.add("hidden");
+        $("#non-geo-result").classList.remove("hidden");
+        renderNonGeoResult(meta);
+    }
+
+    $("#result-card").classList.remove("hidden");
+    $("#chat-card").classList.remove("hidden");
+    // 渲染本卡片里的所有 LaTeX 公式
+    renderMath($("#result-card"));
+    $("#result-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderGeoResult(data) {
+    // 拿到每步的大图 base64 列表(后端 /solve 返回 images 数组)
+    stepImages = Array.isArray(data.images) ? data.images : (data.image ? [data.image] : []);
+
+    // 步骤说明列表(可点击切换)
+    const list = $("#step-list");
+    list.innerHTML = "";
+    const steps = (data.steps && data.steps["步骤"]) || [];
+    steps.forEach((s, i) => {
+        const item = document.createElement("div");
+        item.className = "step-item";
+        item.dataset.index = String(i);
+        const title = s.图形描述 || "";
+        const detail = s.说明 || "";
+        item.innerHTML = `
+            <div class="step-no">${escapeHtml(s.step_id || (i+1))}</div>
+            <div class="step-body">
+                ${ title ? `<div class="step-title">${escapeHtml(title)}</div>` : "" }
+                ${ detail ? `<div class="step-desc">${escapeHtml(detail).replace(/\n/g, "<br>")}</div>` : "" }
+                ${ s.辅助线 && s.辅助线 !== "无" && s.辅助线 !== "不需要" && s.辅助线 !== "不需要辅助线"
+                    ? `<div class="step-extra"><span class="tag">辅助线</span>${escapeHtml(s.辅助线)}</div>` : "" }
+                ${ s.证明理由
+                    ? `<div class="step-extra"><span class="tag tag-reason">理由</span>${escapeHtml(s.证明理由)}</div>` : "" }
+            </div>
+        `;
+        item.addEventListener("click", () => showStep(i));
+        list.appendChild(item);
+    });
+
+    // 步骤数字小圆点指示器
+    const indicator = $("#step-indicator");
+    indicator.innerHTML = "";
+    const total = Math.max(stepImages.length, steps.length);
+    for (let i = 0; i < total; i++) {
+        const dot = document.createElement("button");
+        dot.className = "dot";
+        dot.textContent = String(i + 1);
+        dot.title = `跳到步骤 ${i + 1}`;
+        dot.addEventListener("click", () => showStep(i));
+        indicator.appendChild(dot);
+    }
+
+    // 默认显示第 1 步
+    showStep(0);
+}
+
+function renderNonGeoResult(meta) {
+    // 文字过程支持换行
+    const proc = meta["解题过程"] || "(空)";
+    const ans = meta["答案"] || "(空)";
+    $("#solve-process-body").innerHTML = escapeHtml(proc).replace(/\n/g, "<br>");
+    $("#solve-answer-body").innerHTML = escapeHtml(ans).replace(/\n/g, "<br>");
+    // 清空可能残留的几何图状态
+    stepImages = [];
+    currentStep = 0;
+}
+
+function showStep(i) {
+    const total = stepImages.length || $$("#step-list .step-item").length;
+    if (total <= 0) return;
+    if (i < 0) i = 0;
+    if (i > total - 1) i = total - 1;
+    currentStep = i;
+
+    // 切大图
+    if (stepImages[i]) {
+        $("#proof-image").src = "data:image/png;base64," + stepImages[i];
+    }
+
+    // 步骤卡片高亮
+    $$("#step-list .step-item").forEach((el, idx) => {
+        el.classList.toggle("active", idx === i);
+    });
+    // 指示器高亮
+    $$("#step-indicator .dot").forEach((d, idx) => {
+        d.classList.toggle("active", idx === i);
+    });
+
+    // 让选中卡片在视图内
+    const activeCard = $$("#step-list .step-item")[i];
+    if (activeCard) activeCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// 键盘左右切换(没有 prev/next 按钮了,但卡片/圆点点击 + 键盘已经够用)
+document.addEventListener("keydown", (e) => {
+    // 输入框聚焦时不响应方向键(避免冲突)
+    const tag = (document.activeElement && document.activeElement.tagName) || "";
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    // 仅在几何分支显示时才响应
+    if ($("#geo-result").classList.contains("hidden")) return;
+    if (e.key === "ArrowLeft")  { showStep(currentStep - 1); }
+    if (e.key === "ArrowRight") { showStep(currentStep + 1); }
+});
+
+// ============================================================
+// 聊天 -> /chat
+// ============================================================
+$("#btn-chat").addEventListener("click", sendChat);
+$("#chat-input").addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
+async function sendChat() {
+    const input = $("#chat-input");
+    const q = input.value.trim();
+    if (!q) return;
+    appendMessage("user", q);
+    input.value = "";
+    $("#btn-chat").disabled = true;
+
+    const tempId = appendMessage("ai", "正在思考……", true);
+
+    try {
+        const resp = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question: q, context: solveContext || {} }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || "请求失败");
+        replaceMessage(tempId, data.answer || "(空回答)");
+    } catch (err) {
+        replaceMessage(tempId, "出错了:" + err.message);
+    } finally {
+        $("#btn-chat").disabled = false;
+    }
+}
+
+let chatMsgCounter = 0;
+function appendMessage(role, text, pending = false) {
+    const id = "msg-" + (++chatMsgCounter);
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg " + role;
+    wrap.id = id;
+    wrap.innerHTML = `<div class="chat-bubble${pending ? " pending" : ""}">${escapeHtml(text)}</div>`;
+    $("#chat-history").appendChild(wrap);
+    if (!pending) renderMath(wrap);
+    $("#chat-history").scrollTop = $("#chat-history").scrollHeight;
+    return id;
+}
+function replaceMessage(id, newText) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.querySelector(".chat-bubble").classList.remove("pending");
+    el.querySelector(".chat-bubble").textContent = newText;
+    renderMath(el);
+    $("#chat-history").scrollTop = $("#chat-history").scrollHeight;
+}
+</script>
+
+</body>
+</html>
