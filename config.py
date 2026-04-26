@@ -9,9 +9,22 @@ GeoMind v2 - 配置文件
   macOS / Linux:
     export DASHSCOPE_API_KEY=sk-xxxxxxxx
 
-如果选择直接改本文件,请务必把改后的 config.py 加入 .gitignore,避免误上传。
+也可以在仓库根目录建一个 .env 文件(已在 .gitignore 中,放心写真实 Key):
+    DASHSCOPE_API_KEY=sk-xxxxxxxx
+启动时会通过 python-dotenv 自动加载 .env 内的变量。
+
+如果选择直接改本文件的默认值,请务必把改后的 config.py 加入 .gitignore,避免误上传。
 """
 import os
+
+# 启动时自动从 .env 文件读取环境变量(若存在)。
+# .env 已在 .gitignore 中,不会被 push 到仓库。
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # 没装 python-dotenv 也能跑,只是失去 .env 自动加载能力
+    pass
 
 # === API 凭证 ===
 # 优先从环境变量读取;否则使用代码内填写的默认值(仅供本地快速试用,请勿提交到公共仓库)
